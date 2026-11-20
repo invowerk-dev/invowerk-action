@@ -86,7 +86,9 @@ runs:
               query_fields=''
               form_fields=''
               file_field=''
+              file_many='0'
               file_required='0'
+              open_form='0'
               json_required='0'
               accepts=''
               poll_op=''
@@ -100,7 +102,9 @@ runs:
               query_fields=''
               form_fields=''
               file_field='file'
+              file_many='0'
               file_required='1'
+              open_form='0'
               json_required='0'
               accepts=''
               poll_op=''
@@ -114,7 +118,9 @@ runs:
               query_fields='target_syntax target_flavor format'
               form_fields=''
               file_field='file'
+              file_many='0'
               file_required='1'
+              open_form='0'
               json_required='0'
               accepts='target_syntax target_flavor format'
               poll_op=''
@@ -128,7 +134,9 @@ runs:
               query_fields='format'
               form_fields=''
               file_field=''
+              file_many='0'
               file_required='0'
+              open_form='0'
               json_required='1'
               accepts='format'
               poll_op=''
@@ -142,7 +150,9 @@ runs:
               query_fields='code lang'
               form_fields=''
               file_field=''
+              file_many='0'
               file_required='0'
+              open_form='0'
               json_required='0'
               accepts='code lang'
               poll_op=''
@@ -156,7 +166,9 @@ runs:
               query_fields='lang format'
               form_fields=''
               file_field='file'
+              file_many='0'
               file_required='0'
+              open_form='0'
               json_required='0'
               accepts='lang format'
               poll_op=''
@@ -170,7 +182,9 @@ runs:
               query_fields='explain lang'
               form_fields=''
               file_field='file'
+              file_many='0'
               file_required='1'
+              open_form='0'
               json_required='0'
               accepts='explain lang'
               poll_op=''
@@ -195,7 +209,8 @@ runs:
 
         # request OPERATION [JOB_ID]: one API call. Sets status and ctype; the answer
         # is in $work/response. With JOB_ID, the job id fills the path and no body is
-        # sent (a job's poll and result calls).
+        # sent (a job's poll and result calls). A key the operation does not name is a
+        # free form field: only an open form lets one through the query check.
         request() {
           local op="$1" job="${2:-}" url field value key i written rc=0 upload
           local query=""
@@ -215,7 +230,7 @@ runs:
             key="${keys[$i]}"
             if has "$key" "$query_fields"; then
               query="${query}${query:+&}$(urlencode "$key")=$(urlencode "${values[$i]}")"
-            elif [ -z "$job" ] && has "$key" "$form_fields"; then
+            elif [ -z "$job" ] && { has "$key" "$form_fields" || ! has "$key" "$accepts"; }; then
               args+=(--form-string "$key=${values[$i]}")
             fi
             i=$((i + 1))
@@ -223,11 +238,11 @@ runs:
           if [ -z "$job" ]; then
             case "$body" in
               multipart)
-                if [ -n "$INPUT_FILE" ]; then
-                  upload="${INPUT_FILE//\\/\\\\}"
+                for upload in ${uploads[@]+"${uploads[@]}"}; do
+                  upload="${upload//\\/\\\\}"
                   upload="${upload//\"/\\\"}"
                   args+=(-F "$file_field=@\"$upload\"")
-                fi
+                done
                 ;;
               json)
                 args+=(-H "Content-Type: application/json" --data-binary "@$work/body.json")
@@ -235,7 +250,7 @@ runs:
             esac
           fi
           written="$(curl -sS --fail-with-body --retry 2 --connect-timeout 30 --max-time 900 \
-            -A "invowerk-action/1.0.1" ${auth[@]+"${auth[@]}"} -X "$method" -o "$work/response" \
+            -A "invowerk-action/1.0.2" ${auth[@]+"${auth[@]}"} -X "$method" -o "$work/response" \
             -w '%{http_code} %{content_type}' ${args[@]+"${args[@]}"} \
             "$base$url${query:+?$query}")" || rc=$?
           status="${written%% *}"
@@ -281,14 +296,23 @@ runs:
           case "$line" in '#'*) continue ;; *=*) ;; *) die "query: '$line' is not key=value" ;; esac
           key="${line%%=*}"
           key="${key//[[:space:]]/}"
-          has "$key" "$accepts" || die "$INPUT_OPERATION takes no parameter '$key' (it takes: ${accepts:-none})"
+          has "$key" "$accepts" || [ "$open_form" = 1 ] ||
+            die "$INPUT_OPERATION takes no parameter '$key' (it takes: ${accepts:-none})"
           keys+=("$key")
           values+=("${line#*=}")
         done <<<"$INPUT_QUERY"
 
-        if [ -n "$INPUT_FILE" ]; then
+        uploads=()
+        while IFS= read -r line || [ -n "$line" ]; do
+          line="${line%$'\r'}"
+          [ -n "$line" ] || continue
+          [ -f "$line" ] || die "file not found: $line"
+          uploads+=("$line")
+        done <<<"$INPUT_FILE"
+        if [ "${#uploads[@]}" -gt 0 ]; then
           [ -n "$file_field" ] || die "$INPUT_OPERATION takes no file"
-          [ -f "$INPUT_FILE" ] || die "file not found: $INPUT_FILE"
+          [ "${#uploads[@]}" -eq 1 ] || [ "$file_many" = 1 ] ||
+            die "$INPUT_OPERATION takes one file, not ${#uploads[@]}"
         elif [ "$file_required" = 1 ]; then
           die "$INPUT_OPERATION needs a file (input: file)"
         fi
